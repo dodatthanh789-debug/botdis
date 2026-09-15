@@ -586,9 +586,9 @@ class SellFishView(discord.ui.View):
 
 
 def build_inventory_embed(ctx, data):
-    # Gộp cá trùng tên để giao diện gọn và dễ nhìn.
+    # ===== CÁ: gộp theo tên để hiển thị số lượng =====
     counts = {}
-    for fish in data["fish"]:
+    for fish in data.get("fish", []):
         counts[fish] = counts.get(fish, 0) + 1
 
     if counts:
@@ -597,70 +597,56 @@ def build_inventory_embed(ctx, data):
             rarity = FISH_TO_RARITY.get(fish, "Common")
             emoji = RARITY_EMOJI.get(rarity, "🐟")
             price = FISH_SELL_PRICES.get(rarity, 0)
-            fish_lines.append(f"{emoji} **{fish}** × **{count}** • {price:,}đ")
+            fish_lines.append(f"{emoji} **{fish}** × `{count}`  •  {price:,}đ/con")
         fish_text = "\n".join(fish_lines)
-        if len(fish_text) > 3900:
-            fish_text = fish_text[:3890] + "\n…"
     else:
-        fish_text = "🈳 Balo cá đang trống."
+        fish_text = "*Balo cá đang trống.*"
 
+    # Discord embed field tối đa 1024 ký tự. Nếu nhiều cá thì cắt phần hiển thị,
+    # dữ liệu trong balo vẫn giữ nguyên.
+    if len(fish_text) > 1000:
+        fish_text = fish_text[:990] + "\n… *Còn thêm cá trong balo*"
+
+    # ===== CẦN =====
     if data.get("rod"):
-        rod_name = data["rod"]
         durability = data.get("durability")
-        luck = data.get("luck", 1.0)
         durability_text = "♾️ Không thể gãy" if durability is None else f"{durability}"
         rod_text = (
-            f"🎣 **{rod_name}**\n"
+            f"🎣 **{data['rod']}**\n"
             f"🔧 Độ bền: **{durability_text}**\n"
-            f"🍀 May mắn: **x{luck}**"
+            f"🍀 May mắn: **x{data.get('luck', 1.0)}**"
         )
     else:
-        rod_text = "❌ Chưa trang bị cần câu\nMua bằng `!usabuy can_tre`"
+        rod_text = "❌ **Chưa có cần câu**\n`!usabuy can_tre` để mua"
 
+    # ===== PET =====
     pets = data.get("pets", [])
-    pet_text = "\n".join(f"🐾 **{pet}**" for pet in pets) if pets else "🈳 Chưa có pet."
+    pet_text = "\n".join(f"🐾 **{pet}**" for pet in pets) if pets else "*Chưa có pet.*"
+    if len(pet_text) > 1000:
+        pet_text = pet_text[:990] + "\n…"
 
     embed = discord.Embed(
-        title=f"🎒 KHO ĐỒ • {ctx.author.display_name}",
+        title=f"🎒 BALO CỦA {ctx.author.display_name}",
         description=(
-            f"**┌── 🐟 CÁ ──────────────────┐**\n"
-            f"│ Balo: **{len(data['fish'])}/{data['slots']}** ô\n"
-            f"└──────────────────────────┘"
+            f"**SỨC CHỨA**  `{len(data.get('fish', []))} / {data.get('slots', 30)} ô`\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "🐟 **CÁ ĐÃ CÂU**"
         ),
-        color=discord.Color.blurple()
+        color=discord.Color.blue()
     )
 
-    embed.add_field(
-        name="🐟 CÁ",
-        value=fish_text,
-        inline=False
-    )
-    embed.add_field(
-        name="🎣 CẦN",
-        value=rod_text,
-        inline=True
-    )
-    embed.add_field(
-        name="🐾 PET",
-        value=pet_text[:1024],
-        inline=True
-    )
-    embed.add_field(
-        name="💰 TIỀN",
-        value=f"**{data['cash']:,} VNĐ**",
-        inline=True
-    )
-    embed.set_footer(text="💰 Bán cá → chọn cá → 🔢 Nhập số lượng bất kỳ")
+    embed.add_field(name="🐟 CÁ", value=fish_text, inline=False)
+    embed.add_field(name="🎣 CẦN", value=rod_text, inline=False)
+    embed.add_field(name="🐾 PET", value=pet_text, inline=False)
+    embed.add_field(name="💰 TIỀN", value=f"**{data.get('cash', 0):,} VNĐ**", inline=False)
+    embed.set_footer(text="💰 Bấm Bán cá → chọn cá → Nhập số lượng bất kỳ")
     return embed
 
 
 @bot.command(name="usafinv")
 async def usafinv(ctx):
     data = get_user(ctx.author.id)
-    await ctx.send(
-        embed=build_inventory_embed(ctx, data),
-        view=SellFishView(ctx.author.id)
-    )
+    await ctx.send(embed=build_inventory_embed(ctx, data), view=SellFishView(ctx.author.id))
 
 
 @bot.command(name="usapet")

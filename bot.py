@@ -1,4 +1,5 @@
 import os
+import json
 import random
 import discord
 from discord.ext import commands
@@ -9,6 +10,21 @@ intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 user_data = {}
+DAILY_FILE = "daily_data.json"
+
+def load_daily_data():
+    try:
+        with open(DAILY_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def save_daily_data(data):
+    tmp = DAILY_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, DAILY_FILE)
+
 
 def get_user(user_id):
     if user_id not in user_data:
@@ -89,37 +105,24 @@ async def usecash(ctx):
 
 @bot.command(name="usadaily")
 async def usadaily(ctx):
-    import time
     data = get_user(ctx.author.id)
-    now = time.time()
-    last = data.get("last_daily", 0)
-
-    # Chỉ nhận 1 lần trong mỗi 24 giờ
-    if isinstance(last, str):
-        try:
-            last = float(last)
-        except (ValueError, TypeError):
-            last = 0
-
-    cooldown = 24 * 60 * 60
-    remaining = cooldown - (now - last)
+    daily_data = load_daily_data()
+    user_id = str(ctx.author.id)
+    now = __import__("time").time()
+    last = float(daily_data.get(user_id, 0) or 0)
+    remaining = 86400 - (now - last)
 
     if remaining > 0:
         hours = int(remaining // 3600)
         minutes = int((remaining % 3600) // 60)
-        await ctx.send(
-            f"⏳ {ctx.author.mention}, bạn đã nhận điểm danh rồi! "
-            f"Hãy quay lại sau **{hours} giờ {minutes} phút**."
-        )
+        await ctx.send(f"⏳ {ctx.author.mention}, bạn đã nhận daily rồi! Còn **{hours} giờ {minutes} phút** nữa.")
         return
 
     reward = 50000
     data["cash"] += reward
-    data["last_daily"] = now
-    await ctx.send(
-        f"🎉 {ctx.author.mention} nhận **{reward:,} VNĐ**! "
-        f"⏰ Lần nhận tiếp theo sau 24 giờ."
-    )
+    daily_data[user_id] = now
+    save_daily_data(daily_data)
+    await ctx.send(f"🎉 {ctx.author.mention} nhận **{reward:,} VNĐ**! ⏰ Daily tiếp theo sau 24 giờ.")
 
 # Cá theo độ hiếm. Tỉ lệ tổng: Common 60%, Uncommon 25%, Rare 10%, Epic 4%,
 # Huyền thoại 0.9%, Mythic 0.1%.
@@ -473,40 +476,28 @@ class SellFishView(discord.ui.View):
 @bot.command(name="usafinv")
 async def usafinv(ctx):
     data = get_user(ctx.author.id)
+    counts = {}
+    for fish in data["fish"]:
+        counts[fish] = counts.get(fish, 0) + 1
+    fish_text = "\n".join(
+        f"{RARITY_EMOJI.get(FISH_TO_RARITY.get(name), '🐟')} **{name}** × `{count}`"
+        for name, count in counts.items()
+    ) or "Trống rỗng"
 
-    fish_list = ", ".join(data["fish"]) if data["fish"] else "Trống rỗng"
-
-    # Thông tin cần câu
     if data.get("rod"):
-        rod_name = data["rod"]
-        durability = data.get("durability")
-        rod_luck = data.get("luck", 1.0)
-        durability_text = "♾️ Không thể gãy" if durability is None else f"{durability}"
-        rod_text = (
-            f"🎣 **{rod_name}**\n"
-            f"🔧 Độ bền: **{durability_text}**\n"
-            f"🍀 May mắn: **x{rod_luck}**"
-        )
+        d = data.get("durability")
+        rod_text = f"🎣 **{data['rod']}**\n🔧 Độ bền: **{'♾️' if d is None else d}**\n🍀 May mắn: **x{data.get('luck',1.0)}**"
     else:
-        rod_text = "❌ Chưa có cần câu"
+        rod_text = "❌ Chưa trang bị cần câu"
 
-    # Thông tin pet
     pets = data.get("pets", [])
-    pet_text = ", ".join(pets) if pets else "❌ Chưa có pet"
-
-    embed = discord.Embed(
-        title=f"🎒 BALO CỦA {ctx.author.name}",
-        color=discord.Color.blue()
-    )
-    embed.add_field(
-        name="🐟 Cá",
-        value=f"{len(data['fish'])} / {data['slots']} ô\n{fish_list[:1000]}",
-        inline=False
-    )
-    embed.add_field(name="🎣 Cần đang trang bị", value=rod_text, inline=False)
-    embed.add_field(name="🐾 Pet đang có", value=pet_text[:1024], inline=False)
-    embed.add_field(name="💵 Tiền", value=f"{data['cash']:,} VNĐ", inline=False)
-
+    pet_text = "\n".join(f"🐾 **{p}**" for p in pets) if pets else "❌ Chưa có pet"
+    embed = discord.Embed(title=f"🎒 BALO | {ctx.author.display_name}", description="🐟 Cá • 🎣 Cần câu • 🐾 Pet", color=discord.Color.blue())
+    embed.add_field(name=f"🐟 CÁ — {len(data['fish'])}/{data['slots']} ô", value=fish_text[:1024], inline=False)
+    embed.add_field(name="🎣 CẦN ĐANG TRANG BỊ", value=rod_text, inline=False)
+    embed.add_field(name="🐾 PET", value=pet_text[:1024], inline=False)
+    embed.add_field(name="💵 TIỀN", value=f"**{data['cash']:,} VNĐ**", inline=False)
+    embed.set_footer(text="💰 Bấm Bán cá để chọn cá → nhập số lượng muốn bán.")
     await ctx.send(embed=embed, view=SellFishView(ctx.author.id))
 
 

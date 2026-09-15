@@ -206,6 +206,7 @@ async def usafish(ctx):
         data["rod_key"] = None
         data["durability"] = 0
         data["luck"] = 1.0
+        save_user_data()
         return
 
     if len(data["fish"]) >= data["slots"]:
@@ -347,41 +348,124 @@ async def usafishlist(ctx):
 
 
 class SellFishSelect(discord.ui.Select):
-    def __init__(self, owner_id, fish_options):
-        self.owner_id=owner_id
-        options=[]
-        for fish_name,count in fish_options[:25]:
-            rarity=FISH_TO_RARITY.get(fish_name,"Common")
-            price=FISH_SELL_PRICES.get(rarity,0)
-            options.append(discord.SelectOption(label=fish_name[:100], description=f"{count} con | {price:,} VNĐ/con", value=fish_name))
-        super().__init__(placeholder="🐟 Chọn cá muốn bán...", min_values=1, max_values=1, options=options)
+    def __init__(self, owner_id, fish_options, page=0):
+        self.owner_id = owner_id
+        self.page = page
+        self.all_options = fish_options
+
+        # Discord Select tối đa 25 lựa chọn. Chia trang để không mất cá.
+        page_size = 20
+        chunk = fish_options[page * page_size:(page + 1) * page_size]
+        options = []
+        for fish_name, count in chunk:
+            rarity = FISH_TO_RARITY.get(fish_name, "Common")
+            price = FISH_SELL_PRICES.get(rarity, 0)
+            options.append(
+                discord.SelectOption(
+                    label=fish_name[:100],
+                    description=f"{count} con • {price:,}đ/con",
+                    value=fish_name
+                )
+            )
+
+        super().__init__(
+            placeholder=f"🐟 Chọn cá muốn bán • Trang {page + 1}/{max(1, (len(fish_options)-1)//page_size+1)}",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+
     async def callback(self, interaction):
         if interaction.user.id != self.owner_id:
-            return await interaction.response.send_message("❌ Đây không phải balo của bạn.", ephemeral=True)
-        data=get_user(self.owner_id); fish=self.values[0]; count=data["fish"].count(fish)
-        if count<=0: return await interaction.response.send_message("❌ Cá này không còn trong balo.", ephemeral=True)
-        rarity=FISH_TO_RARITY.get(fish,"Common"); price=FISH_SELL_PRICES[rarity]
-        view=SellQuantityView(self.owner_id,fish,count,price)
-        await interaction.response.send_message(f"🐟 **{fish}** — đang có **{count} con**.\n💰 Giá: **{price:,} VNĐ/con**\n\nChọn số lượng muốn bán:",view=view,ephemeral=True)
+            return await interaction.response.send_message(
+                "❌ Đây không phải balo của bạn.", ephemeral=True
+            )
 
-class SellQuantitySelect(discord.ui.Select):
-    def __init__(self, owner_id, fish, max_count, price):
-        self.owner_id=owner_id; self.fish=fish; self.max_count=max_count; self.price=price
-        opts=[discord.SelectOption(label=f"{n} con",description=f"Nhận {n*price:,} VNĐ",value=str(n)) for n in range(1,min(max_count,25)+1)]
-        super().__init__(placeholder="🔢 Chọn số lượng...",min_values=1,max_values=1,options=opts)
-    async def callback(self, interaction):
+        data = get_user(self.owner_id)
+        fish = self.values[0]
+        count = data["fish"].count(fish)
+
+        if count <= 0:
+            return await interaction.response.send_message(
+                "❌ Cá này không còn trong balo.", ephemeral=True
+            )
+
+        rarity = FISH_TO_RARITY.get(fish, "Common")
+        price = FISH_SELL_PRICES[rarity]
+
+        await interaction.response.send_message(
+            f"🐟 **{fish}**\n"
+            f"📦 Đang có: **{count} con**\n"
+            f"💰 Giá: **{price:,} VNĐ/con**\n"
+            f"💵 Bán hết sẽ nhận: **{count * price:,} VNĐ**\n\n"
+            f"Nhấn **🔢 Nhập số lượng** để nhập số bất kỳ.",
+            view=SellQuantityView(self.owner_id, fish, count, price),
+            ephemeral=True
+        )
+
+
+class SellFishPageView(discord.ui.View):
+    def __init__(self, owner_id, fish_options, page=0):
+        super().__init__(timeout=180)
+        self.owner_id = owner_id
+        self.fish_options = fish_options
+        self.page = page
+        self.page_size = 20
+
+        self.add_item(SellFishSelect(owner_id, fish_options, page))
+
+        total_pages = max(1, (len(fish_options) - 1) // self.page_size + 1)
+        if total_pages > 1:
+            prev = discord.ui.Button(
+                label="◀ Trang trước",
+                style=discord.ButtonStyle.secondary,
+                disabled=(page == 0)
+            )
+            nxt = discord.ui.Button(
+                label="Trang sau ▶",
+                style=discord.ButtonStyle.secondary,
+                disabled=(page >= total_pages - 1)
+            )
+            prev.callback = self.prev_page
+            nxt.callback = self.next_page
+            self.add_item(prev)
+            self.add_item(nxt)
+
+    async def prev_page(self, interaction):
         if interaction.user.id != self.owner_id:
-            return await interaction.response.send_message("❌ Đây không phải balo của bạn.",ephemeral=True)
-        data=get_user(self.owner_id); actual=data["fish"].count(self.fish); qty=min(int(self.values[0]),actual)
-        for _ in range(qty): data["fish"].remove(self.fish)
-        total=qty*self.price; data["cash"]+=total
-        save_user_data()
-        await interaction.response.edit_message(content=f"✅ Đã bán **{qty} con {self.fish}**!\n💰 Nhận: **{total:,} VNĐ**\n🎒 Còn: **{data['fish'].count(self.fish)} con**\n💵 Số dư: **{data['cash']:,} VNĐ**",view=None)
+            return await interaction.response.send_message(
+                "❌ Đây không phải balo của bạn.", ephemeral=True
+            )
+        await interaction.response.edit_message(
+            content=self.page_text(max(0, self.page - 1)),
+            view=SellFishPageView(self.owner_id, self.fish_options, max(0, self.page - 1))
+        )
 
-class SellQuantityModal(discord.ui.Modal, title="💰 Bán cá"):
+    async def next_page(self, interaction):
+        if interaction.user.id != self.owner_id:
+            return await interaction.response.send_message(
+                "❌ Đây không phải balo của bạn.", ephemeral=True
+            )
+        total_pages = max(1, (len(self.fish_options) - 1) // self.page_size + 1)
+        new_page = min(total_pages - 1, self.page + 1)
+        await interaction.response.edit_message(
+            content=self.page_text(new_page),
+            view=SellFishPageView(self.owner_id, self.fish_options, new_page)
+        )
+
+    def page_text(self, page):
+        total_pages = max(1, (len(self.fish_options) - 1) // self.page_size + 1)
+        return (
+            "🐟 **CHỌN CÁ MUỐN BÁN**\n"
+            f"📄 Trang **{page + 1}/{total_pages}** • Có **{len(self.fish_options)} loại cá**\n"
+            "Chọn cá bên dưới → nhập số lượng muốn bán."
+        )
+
+
+class SellQuantityModal(discord.ui.Modal, title="💰 BÁN CÁ"):
     quantity = discord.ui.TextInput(
         label="Số lượng muốn bán",
-        placeholder="Nhập số lượng, ví dụ: 37",
+        placeholder="Nhập số bất kỳ, ví dụ: 37",
         required=True,
         min_length=1,
         max_length=10
@@ -396,40 +480,37 @@ class SellQuantityModal(discord.ui.Modal, title="💰 Bán cá"):
 
     async def on_submit(self, interaction: discord.Interaction):
         if interaction.user.id != self.owner_id:
-            await interaction.response.send_message(
+            return await interaction.response.send_message(
                 "❌ Đây không phải balo của bạn.", ephemeral=True
             )
-            return
 
         try:
             quantity = int(str(self.quantity.value).strip())
         except ValueError:
-            await interaction.response.send_message(
+            return await interaction.response.send_message(
                 "❌ Số lượng phải là số nguyên.", ephemeral=True
             )
-            return
 
         if quantity <= 0:
-            await interaction.response.send_message(
+            return await interaction.response.send_message(
                 "❌ Số lượng phải lớn hơn 0.", ephemeral=True
             )
-            return
 
         data = get_user(self.owner_id)
         actual_count = data["fish"].count(self.fish_name)
 
         if actual_count <= 0:
-            await interaction.response.send_message(
+            return await interaction.response.send_message(
                 "❌ Cá này không còn trong balo.", ephemeral=True
             )
-            return
 
+        # Không cho bán vượt quá số lượng thật trong balo.
         if quantity > actual_count:
-            await interaction.response.send_message(
-                f"❌ Bạn chỉ có **{actual_count} con {self.fish_name}** trong balo.",
+            return await interaction.response.send_message(
+                f"❌ **Không đủ cá!** Bạn chỉ có **{actual_count} con {self.fish_name}**.\n"
+                f"Bạn vừa nhập **{quantity} con** nên chưa bán con nào.",
                 ephemeral=True
             )
-            return
 
         for _ in range(quantity):
             data["fish"].remove(self.fish_name)
@@ -442,7 +523,8 @@ class SellQuantityModal(discord.ui.Modal, title="💰 Bán cá"):
             f"✅ Đã bán **{quantity} con {self.fish_name}**!\n"
             f"💰 Nhận được: **{total:,} VNĐ**\n"
             f"🎒 Còn lại: **{data['fish'].count(self.fish_name)} con**\n"
-            f"💵 Số dư: **{data['cash']:,} VNĐ**"
+            f"💵 Số dư: **{data['cash']:,} VNĐ**",
+            ephemeral=True
         )
 
 
@@ -457,72 +539,128 @@ class SellQuantityView(discord.ui.View):
     @discord.ui.button(label="🔢 Nhập số lượng", style=discord.ButtonStyle.blurple)
     async def quantity_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.owner_id:
-            await interaction.response.send_message(
+            return await interaction.response.send_message(
                 "❌ Đây không phải balo của bạn.", ephemeral=True
             )
-            return
-
         await interaction.response.send_modal(
             SellQuantityModal(
-                self.owner_id,
-                self.fish_name,
-                self.max_count,
-                self.price
+                self.owner_id, self.fish_name, self.max_count, self.price
             )
         )
 
+
 class SellFishView(discord.ui.View):
     def __init__(self, owner_id):
-        super().__init__(timeout=120); self.owner_id=owner_id
-    @discord.ui.button(label="💰 Bán cá", style=discord.ButtonStyle.green)
+        super().__init__(timeout=180)
+        self.owner_id = owner_id
+
+    @discord.ui.button(label="💰 Bán cá", style=discord.ButtonStyle.green, row=0)
     async def sell_button(self, interaction, button):
         if interaction.user.id != self.owner_id:
-            return await interaction.response.send_message("❌ Đây không phải balo của bạn.",ephemeral=True)
-        data=get_user(self.owner_id)
-        if not data["fish"]: return await interaction.response.send_message("❌ Balo cá đang trống.",ephemeral=True)
-        counts={}
-        for fish in data["fish"]: counts[fish]=counts.get(fish,0)+1
-        view=discord.ui.View(timeout=120); view.add_item(SellFishSelect(self.owner_id,list(counts.items())))
-        await interaction.response.send_message("🐟 **CHỌN CÁ MUỐN BÁN**\nChọn loại cá, sau đó chọn số lượng.",view=view,ephemeral=True)
+            return await interaction.response.send_message(
+                "❌ Đây không phải balo của bạn.", ephemeral=True
+            )
 
-@bot.command(name="usafinv")
-async def usafinv(ctx):
-    data = get_user(ctx.author.id)
+        data = get_user(self.owner_id)
+        if not data["fish"]:
+            return await interaction.response.send_message(
+                "❌ Balo cá đang trống.", ephemeral=True
+            )
 
-    fish_list = ", ".join(data["fish"]) if data["fish"] else "Trống rỗng"
+        counts = {}
+        for fish in data["fish"]:
+            counts[fish] = counts.get(fish, 0) + 1
 
-    # Thông tin cần câu
+        options = sorted(
+            counts.items(),
+            key=lambda x: (
+                list(FISH_RARITIES.keys()).index(FISH_TO_RARITY.get(x[0], "Common")),
+                x[0]
+            )
+        )
+
+        view = SellFishPageView(self.owner_id, options, 0)
+        await interaction.response.send_message(
+            view.page_text(0), view=view, ephemeral=True
+        )
+
+
+def build_inventory_embed(ctx, data):
+    # Gộp cá trùng tên để giao diện gọn và dễ nhìn.
+    counts = {}
+    for fish in data["fish"]:
+        counts[fish] = counts.get(fish, 0) + 1
+
+    if counts:
+        fish_lines = []
+        for fish, count in counts.items():
+            rarity = FISH_TO_RARITY.get(fish, "Common")
+            emoji = RARITY_EMOJI.get(rarity, "🐟")
+            price = FISH_SELL_PRICES.get(rarity, 0)
+            fish_lines.append(f"{emoji} **{fish}** × **{count}** • {price:,}đ")
+        fish_text = "\n".join(fish_lines)
+        if len(fish_text) > 3900:
+            fish_text = fish_text[:3890] + "\n…"
+    else:
+        fish_text = "🈳 Balo cá đang trống."
+
     if data.get("rod"):
         rod_name = data["rod"]
         durability = data.get("durability")
-        rod_luck = data.get("luck", 1.0)
+        luck = data.get("luck", 1.0)
         durability_text = "♾️ Không thể gãy" if durability is None else f"{durability}"
         rod_text = (
             f"🎣 **{rod_name}**\n"
             f"🔧 Độ bền: **{durability_text}**\n"
-            f"🍀 May mắn: **x{rod_luck}**"
+            f"🍀 May mắn: **x{luck}**"
         )
     else:
-        rod_text = "❌ Chưa có cần câu"
+        rod_text = "❌ Chưa trang bị cần câu\nMua bằng `!usabuy can_tre`"
 
-    # Thông tin pet
     pets = data.get("pets", [])
-    pet_text = ", ".join(pets) if pets else "❌ Chưa có pet"
+    pet_text = "\n".join(f"🐾 **{pet}**" for pet in pets) if pets else "🈳 Chưa có pet."
 
     embed = discord.Embed(
-        title=f"🎒 BALO CỦA {ctx.author.name}",
-        color=discord.Color.blue()
+        title=f"🎒 KHO ĐỒ • {ctx.author.display_name}",
+        description=(
+            f"**┌── 🐟 CÁ ──────────────────┐**\n"
+            f"│ Balo: **{len(data['fish'])}/{data['slots']}** ô\n"
+            f"└──────────────────────────┘"
+        ),
+        color=discord.Color.blurple()
     )
+
     embed.add_field(
-        name="🐟 Cá",
-        value=f"{len(data['fish'])} / {data['slots']} ô\n{fish_list[:1000]}",
+        name="🐟 CÁ",
+        value=fish_text,
         inline=False
     )
-    embed.add_field(name="🎣 Cần đang trang bị", value=rod_text, inline=False)
-    embed.add_field(name="🐾 Pet đang có", value=pet_text[:1024], inline=False)
-    embed.add_field(name="💵 Tiền", value=f"{data['cash']:,} VNĐ", inline=False)
+    embed.add_field(
+        name="🎣 CẦN",
+        value=rod_text,
+        inline=True
+    )
+    embed.add_field(
+        name="🐾 PET",
+        value=pet_text[:1024],
+        inline=True
+    )
+    embed.add_field(
+        name="💰 TIỀN",
+        value=f"**{data['cash']:,} VNĐ**",
+        inline=True
+    )
+    embed.set_footer(text="💰 Bán cá → chọn cá → 🔢 Nhập số lượng bất kỳ")
+    return embed
 
-    await ctx.send(embed=embed, view=SellFishView(ctx.author.id))
+
+@bot.command(name="usafinv")
+async def usafinv(ctx):
+    data = get_user(ctx.author.id)
+    await ctx.send(
+        embed=build_inventory_embed(ctx, data),
+        view=SellFishView(ctx.author.id)
+    )
 
 
 @bot.command(name="usapet")

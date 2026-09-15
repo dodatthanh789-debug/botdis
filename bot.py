@@ -73,7 +73,7 @@ async def usagive(ctx, member: discord.Member = None, amount: int = None):
 @bot.command(name="ggad")
 async def ggad(ctx, member: discord.Member = None):
     if ctx.author.name.lower() != "kecodon_123ok":
-        await ctx.send("❌ Bạn không có quyền dùng lệnh này.")
+        await ctx.send("❌ mày dell đủ trình để dùng lệnh này.")
         return
     if member is None:
         await ctx.send("❌ Dùng: `!ggad @người`")
@@ -468,7 +468,7 @@ class SellQuantityModal(discord.ui.Modal, title="💰 BÁN CÁ"):
         placeholder="Nhập số bất kỳ, ví dụ: 37",
         required=True,
         min_length=1,
-        max_length=10
+        max_length=1000000
     )
 
     def __init__(self, owner_id, fish_name, max_count, price):

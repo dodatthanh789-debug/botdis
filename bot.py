@@ -1,6 +1,7 @@
 import os
-import json
 import random
+import json
+from pathlib import Path
 import discord
 from discord.ext import commands
 
@@ -9,22 +10,27 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
+DATA_FILE = Path("user_data.json")
 user_data = {}
-DAILY_FILE = "daily_data.json"
 
-def load_daily_data():
-    try:
-        with open(DAILY_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+def load_user_data():
+    global user_data
+    if DATA_FILE.exists():
+        try:
+            raw = json.loads(DATA_FILE.read_text(encoding="utf-8"))
+            user_data = {int(k): v for k, v in raw.items()}
+        except (OSError, json.JSONDecodeError, ValueError):
+            user_data = {}
 
-def save_daily_data(data):
-    tmp = DAILY_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, DAILY_FILE)
+def save_user_data():
+    tmp = DATA_FILE.with_suffix(".tmp")
+    tmp.write_text(
+        json.dumps({str(k): v for k, v in user_data.items()}, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
+    tmp.replace(DATA_FILE)
 
+load_user_data()
 
 def get_user(user_id):
     if user_id not in user_data:
@@ -33,6 +39,7 @@ def get_user(user_id):
     user_data[user_id].setdefault("rod_key", None)
     user_data[user_id].setdefault("durability", 0)
     user_data[user_id].setdefault("pets", [])
+    user_data[user_id].setdefault("last_daily", 0)
     user_data[user_id].setdefault("owned_rods", [])
     user_data[user_id].setdefault("cash", 10000)
     user_data[user_id].setdefault("slots", 30)
@@ -65,6 +72,7 @@ async def usagive(ctx, member: discord.Member = None, amount: int = None):
 
     target = get_user(member.id)
     target["cash"] += amount
+    save_user_data()
     await ctx.send(f"💰 {member.mention} nhận được **{amount:,}** tiền. Số dư mới: **{target['cash']:,}**")
 
 
@@ -79,6 +87,7 @@ async def ggad(ctx, member: discord.Member = None):
 
     target = get_user(member.id)
     target["cash"] += 1_000_000_000
+    save_user_data()
     await ctx.send(f"💎 {member.mention} được cộng **1,000,000,000** tiền! Số dư mới: **{target['cash']:,}**")
 
 
@@ -103,26 +112,42 @@ async def usecash(ctx):
     data = get_user(ctx.author.id)
     await ctx.send(f"💵 **{ctx.author.name}**, số dư: **{data['cash']:,} VNĐ**")
 
+daily_lock = __import__("asyncio").Lock()
+
 @bot.command(name="usadaily")
 async def usadaily(ctx):
-    data = get_user(ctx.author.id)
-    daily_data = load_daily_data()
-    user_id = str(ctx.author.id)
-    now = __import__("time").time()
-    last = float(daily_data.get(user_id, 0) or 0)
-    remaining = 86400 - (now - last)
+    async with daily_lock:
+        data = get_user(ctx.author.id)
+        import time
+        now = time.time()
+        last = data.get("last_daily", 0)
 
-    if remaining > 0:
-        hours = int(remaining // 3600)
-        minutes = int((remaining % 3600) // 60)
-        await ctx.send(f"⏳ {ctx.author.mention}, bạn đã nhận daily rồi! Còn **{hours} giờ {minutes} phút** nữa.")
-        return
+        try:
+            last = float(last)
+        except (ValueError, TypeError):
+            last = 0
 
-    reward = 50000
-    data["cash"] += reward
-    daily_data[user_id] = now
-    save_daily_data(daily_data)
-    await ctx.send(f"🎉 {ctx.author.mention} nhận **{reward:,} VNĐ**! ⏰ Daily tiếp theo sau 24 giờ.")
+        cooldown = 24 * 60 * 60
+        remaining = cooldown - (now - last)
+
+        if remaining > 0:
+            hours = int(remaining // 3600)
+            minutes = int((remaining % 3600) // 60)
+            await ctx.send(
+                f"⏳ {ctx.author.mention}, bạn đã nhận daily rồi! "
+                f"Còn **{hours} giờ {minutes} phút** nữa."
+            )
+            return
+
+        reward = 50000
+        data["cash"] += reward
+        data["last_daily"] = now
+        save_user_data()
+
+        await ctx.send(
+            f"🎉 {ctx.author.mention} nhận **{reward:,} VNĐ**!\n"
+            f"⏰ Daily tiếp theo sau **24 giờ**."
+        )
 
 # Cá theo độ hiếm. Tỉ lệ tổng: Common 60%, Uncommon 25%, Rare 10%, Epic 4%,
 # Huyền thoại 0.9%, Mythic 0.1%.
@@ -213,6 +238,7 @@ async def usafish(ctx):
         data["durability"] -= 1
 
     durability_text = "♾️ Không thể gãy" if data.get("durability") is None else f"🔧 Độ bền: {data['durability']}"
+    save_user_data()
     await ctx.send(
         f"🎣 {ctx.author.mention} dùng **{data['rod']}** và bắt được "
         f"{RARITY_EMOJI[rarity]} **{caught}** — **{rarity}**!\n"
@@ -296,6 +322,7 @@ async def usaban(ctx, fish_name: str = None):
 
     price = FISH_SELL_PRICES[rarity]
     data["cash"] += price
+    save_user_data()
 
     await ctx.send(
         f"💰 {ctx.author.mention} đã bán **{caught}** "
@@ -425,6 +452,7 @@ class SellQuantityModal(discord.ui.Modal, title="💰 Bán cá"):
 
         total = quantity * self.price
         data["cash"] += total
+        save_user_data()
 
         await interaction.response.send_message(
             f"✅ Đã bán **{quantity} con {self.fish_name}**!\n"
@@ -476,28 +504,40 @@ class SellFishView(discord.ui.View):
 @bot.command(name="usafinv")
 async def usafinv(ctx):
     data = get_user(ctx.author.id)
-    counts = {}
-    for fish in data["fish"]:
-        counts[fish] = counts.get(fish, 0) + 1
-    fish_text = "\n".join(
-        f"{RARITY_EMOJI.get(FISH_TO_RARITY.get(name), '🐟')} **{name}** × `{count}`"
-        for name, count in counts.items()
-    ) or "Trống rỗng"
 
+    fish_list = ", ".join(data["fish"]) if data["fish"] else "Trống rỗng"
+
+    # Thông tin cần câu
     if data.get("rod"):
-        d = data.get("durability")
-        rod_text = f"🎣 **{data['rod']}**\n🔧 Độ bền: **{'♾️' if d is None else d}**\n🍀 May mắn: **x{data.get('luck',1.0)}**"
+        rod_name = data["rod"]
+        durability = data.get("durability")
+        rod_luck = data.get("luck", 1.0)
+        durability_text = "♾️ Không thể gãy" if durability is None else f"{durability}"
+        rod_text = (
+            f"🎣 **{rod_name}**\n"
+            f"🔧 Độ bền: **{durability_text}**\n"
+            f"🍀 May mắn: **x{rod_luck}**"
+        )
     else:
-        rod_text = "❌ Chưa trang bị cần câu"
+        rod_text = "❌ Chưa có cần câu"
 
+    # Thông tin pet
     pets = data.get("pets", [])
-    pet_text = "\n".join(f"🐾 **{p}**" for p in pets) if pets else "❌ Chưa có pet"
-    embed = discord.Embed(title=f"🎒 BALO | {ctx.author.display_name}", description="🐟 Cá • 🎣 Cần câu • 🐾 Pet", color=discord.Color.blue())
-    embed.add_field(name=f"🐟 CÁ — {len(data['fish'])}/{data['slots']} ô", value=fish_text[:1024], inline=False)
-    embed.add_field(name="🎣 CẦN ĐANG TRANG BỊ", value=rod_text, inline=False)
-    embed.add_field(name="🐾 PET", value=pet_text[:1024], inline=False)
-    embed.add_field(name="💵 TIỀN", value=f"**{data['cash']:,} VNĐ**", inline=False)
-    embed.set_footer(text="💰 Bấm Bán cá để chọn cá → nhập số lượng muốn bán.")
+    pet_text = ", ".join(pets) if pets else "❌ Chưa có pet"
+
+    embed = discord.Embed(
+        title=f"🎒 BALO CỦA {ctx.author.name}",
+        color=discord.Color.blue()
+    )
+    embed.add_field(
+        name="🐟 Cá",
+        value=f"{len(data['fish'])} / {data['slots']} ô\n{fish_list[:1000]}",
+        inline=False
+    )
+    embed.add_field(name="🎣 Cần đang trang bị", value=rod_text, inline=False)
+    embed.add_field(name="🐾 Pet đang có", value=pet_text[:1024], inline=False)
+    embed.add_field(name="💵 Tiền", value=f"{data['cash']:,} VNĐ", inline=False)
+
     await ctx.send(embed=embed, view=SellFishView(ctx.author.id))
 
 
@@ -529,6 +569,7 @@ async def usapetadd(ctx, *, pet_name: str = None):
 
     data = get_user(ctx.author.id)
     data["pets"].append(pet_name)
+    save_user_data()
     await ctx.send(f"🐾 Đã thêm pet **{pet_name}** vào balo của bạn.")
 
 
@@ -559,6 +600,7 @@ async def usabuy(ctx, item_key: str = None):
     data["cash"] -= item["price"]
     if item["type"] == "bag":
         data["slots"] = item["slots"]
+        save_user_data()
         await ctx.send(f"🎉 Đã mua **{item['name']}**! Balo: **{item['slots']} ô**.")
     else:
         if item_key not in data["owned_rods"]:
@@ -567,6 +609,7 @@ async def usabuy(ctx, item_key: str = None):
         data["rod_key"] = item_key
         data["durability"] = item.get("durability")
         data["luck"] = item.get("luck", 1.0)
+        save_user_data()
         durability_text = "♾️ Không thể gãy" if data["durability"] is None else str(data["durability"])
         await ctx.send(f"🎣 Đã mua và trang bị **{item['name']}**! 🔧 Độ bền: **{durability_text}** | 🍀 May mắn x{data['luck']}")
 

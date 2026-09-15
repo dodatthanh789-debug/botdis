@@ -1,7 +1,6 @@
 import os
-import random
 import json
-from pathlib import Path
+import random
 import discord
 from discord.ext import commands
 
@@ -10,27 +9,23 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
-DATA_FILE = Path("user_data.json")
-user_data = {}
+USER_DATA_FILE = "user_data.json"
 
 def load_user_data():
-    global user_data
-    if DATA_FILE.exists():
-        try:
-            raw = json.loads(DATA_FILE.read_text(encoding="utf-8"))
-            user_data = {int(k): v for k, v in raw.items()}
-        except (OSError, json.JSONDecodeError, ValueError):
-            user_data = {}
+    try:
+        with open(USER_DATA_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+            return {int(k): v for k, v in raw.items()}
+    except (FileNotFoundError, json.JSONDecodeError, ValueError, TypeError):
+        return {}
 
 def save_user_data():
-    tmp = DATA_FILE.with_suffix(".tmp")
-    tmp.write_text(
-        json.dumps({str(k): v for k, v in user_data.items()}, ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
-    tmp.replace(DATA_FILE)
+    tmp = USER_DATA_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({str(k): v for k, v in user_data.items()}, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, USER_DATA_FILE)
 
-load_user_data()
+user_data = load_user_data()
 
 def get_user(user_id):
     if user_id not in user_data:
@@ -39,7 +34,6 @@ def get_user(user_id):
     user_data[user_id].setdefault("rod_key", None)
     user_data[user_id].setdefault("durability", 0)
     user_data[user_id].setdefault("pets", [])
-    user_data[user_id].setdefault("last_daily", 0)
     user_data[user_id].setdefault("owned_rods", [])
     user_data[user_id].setdefault("cash", 10000)
     user_data[user_id].setdefault("slots", 30)
@@ -112,42 +106,29 @@ async def usecash(ctx):
     data = get_user(ctx.author.id)
     await ctx.send(f"💵 **{ctx.author.name}**, số dư: **{data['cash']:,} VNĐ**")
 
-daily_lock = __import__("asyncio").Lock()
-
 @bot.command(name="usadaily")
 async def usadaily(ctx):
-    async with daily_lock:
-        data = get_user(ctx.author.id)
-        import time
-        now = time.time()
-        last = data.get("last_daily", 0)
+    data = get_user(ctx.author.id)
+    now = __import__("time").time()
+    last = data.get("last_daily", 0) or 0
+    try:
+        last = float(last)
+    except (ValueError, TypeError):
+        last = 0
 
-        try:
-            last = float(last)
-        except (ValueError, TypeError):
-            last = 0
+    cooldown = 24 * 60 * 60
+    remaining = cooldown - (now - last)
+    if remaining > 0:
+        hours = int(remaining // 3600)
+        minutes = int((remaining % 3600) // 60)
+        await ctx.send(f"⏳ {ctx.author.mention}, bạn đã nhận daily rồi! Còn **{hours} giờ {minutes} phút** nữa.")
+        return
 
-        cooldown = 24 * 60 * 60
-        remaining = cooldown - (now - last)
-
-        if remaining > 0:
-            hours = int(remaining // 3600)
-            minutes = int((remaining % 3600) // 60)
-            await ctx.send(
-                f"⏳ {ctx.author.mention}, bạn đã nhận daily rồi! "
-                f"Còn **{hours} giờ {minutes} phút** nữa."
-            )
-            return
-
-        reward = 50000
-        data["cash"] += reward
-        data["last_daily"] = now
-        save_user_data()
-
-        await ctx.send(
-            f"🎉 {ctx.author.mention} nhận **{reward:,} VNĐ**!\n"
-            f"⏰ Daily tiếp theo sau **24 giờ**."
-        )
+    reward = 50000
+    data["cash"] += reward
+    data["last_daily"] = now
+    save_user_data()
+    await ctx.send(f"🎉 {ctx.author.mention} nhận **{reward:,} VNĐ**! ⏰ Daily tiếp theo sau 24 giờ.")
 
 # Cá theo độ hiếm. Tỉ lệ tổng: Common 60%, Uncommon 25%, Rare 10%, Epic 4%,
 # Huyền thoại 0.9%, Mythic 0.1%.
@@ -237,8 +218,8 @@ async def usafish(ctx):
     if data.get("durability") is not None:
         data["durability"] -= 1
 
-    durability_text = "♾️ Không thể gãy" if data.get("durability") is None else f"🔧 Độ bền: {data['durability']}"
     save_user_data()
+    durability_text = "♾️ Không thể gãy" if data.get("durability") is None else f"🔧 Độ bền: {data['durability']}"
     await ctx.send(
         f"🎣 {ctx.author.mention} dùng **{data['rod']}** và bắt được "
         f"{RARITY_EMOJI[rarity]} **{caught}** — **{rarity}**!\n"
@@ -250,6 +231,7 @@ async def usafish(ctx):
         data["rod"] = None
         data["rod_key"] = None
         data["luck"] = 1.0
+        save_user_data()
         await ctx.send(f"💥 **{broken_rod}** đã gãy sau lần câu này! Hãy mua cần mới để tiếp tục câu.")
 
 
@@ -295,6 +277,7 @@ async def usaban(ctx, fish_name: str = None):
 
         data["fish"].clear()
         data["cash"] += total
+        save_user_data()
         await ctx.send(
             f"💰 {ctx.author.mention} đã bán **{sold} con cá** và nhận "
             f"**{total:,} VNĐ**!\n💵 Số dư: **{data['cash']:,} VNĐ**"
@@ -392,6 +375,7 @@ class SellQuantitySelect(discord.ui.Select):
         data=get_user(self.owner_id); actual=data["fish"].count(self.fish); qty=min(int(self.values[0]),actual)
         for _ in range(qty): data["fish"].remove(self.fish)
         total=qty*self.price; data["cash"]+=total
+        save_user_data()
         await interaction.response.edit_message(content=f"✅ Đã bán **{qty} con {self.fish}**!\n💰 Nhận: **{total:,} VNĐ**\n🎒 Còn: **{data['fish'].count(self.fish)} con**\n💵 Số dư: **{data['cash']:,} VNĐ**",view=None)
 
 class SellQuantityModal(discord.ui.Modal, title="💰 Bán cá"):

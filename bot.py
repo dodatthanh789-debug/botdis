@@ -12,10 +12,15 @@ user_data = {}
 
 def get_user(user_id):
     if user_id not in user_data:
-        user_data[user_id] = {"cash": 10000, "slots": 30, "fish": [], "last_daily": "", "rod": None, "rod_key": None, "durability": 0, "luck": 1.0, "owned_rods": []}
+        user_data[user_id] = {"cash": 10000, "slots": 30, "fish": [], "last_daily": 0, "rod": None, "rod_key": None, "durability": 0, "luck": 1.0, "owned_rods": []}
     # Tương thích với dữ liệu người chơi cũ
     user_data[user_id].setdefault("rod_key", None)
     user_data[user_id].setdefault("durability", 0)
+    user_data[user_id].setdefault("owned_rods", [])
+    user_data[user_id].setdefault("cash", 10000)
+    user_data[user_id].setdefault("slots", 30)
+    user_data[user_id].setdefault("fish", [])
+    user_data[user_id].setdefault("last_daily", 0)
     return user_data[user_id]
 
 SHOP_ITEMS = {
@@ -29,7 +34,7 @@ SHOP_ITEMS = {
     "balo_da": {"name": "Balo da", "price": 45000, "type": "bag", "slots": 45},
     "balo_quy_toc": {"name": "Balo quý tộc", "price": 67000, "type": "bag", "slots": 67},
     "balo_thien_ha": {"name": "Balo thiên hà", "price": 90000, "type": "bag", "slots": 90},
-    "balo_quan_tri": {"name": "Balo quản trị", "price": 999999999, "type": "bag", "slots": 999999},
+    "balo_quan_tri": {"name": "Balo quản trị", "price": 999999, "type": "bag", "slots": 999999},
 }
 
 @bot.command(name="usagive")
@@ -57,7 +62,7 @@ async def ggad(ctx, member: discord.Member = None):
 
     target = get_user(member.id)
     target["cash"] += 1_000_000_000
-    await ctx.send(f"💎 {member.mention} được cộng **100,000,000,000** tiền! Số dư mới: **{target['cash']:,}**")
+    await ctx.send(f"💎 {member.mention} được cộng **1,000,000,000** tiền! Số dư mới: **{target['cash']:,}**")
 
 
 @bot.event
@@ -83,10 +88,37 @@ async def usecash(ctx):
 
 @bot.command(name="usadaily")
 async def usadaily(ctx):
+    import time
     data = get_user(ctx.author.id)
+    now = time.time()
+    last = data.get("last_daily", 0)
+
+    # Chỉ nhận 1 lần trong mỗi 24 giờ
+    if isinstance(last, str):
+        try:
+            last = float(last)
+        except (ValueError, TypeError):
+            last = 0
+
+    cooldown = 24 * 60 * 60
+    remaining = cooldown - (now - last)
+
+    if remaining > 0:
+        hours = int(remaining // 3600)
+        minutes = int((remaining % 3600) // 60)
+        await ctx.send(
+            f"⏳ {ctx.author.mention}, bạn đã nhận điểm danh rồi! "
+            f"Hãy quay lại sau **{hours} giờ {minutes} phút**."
+        )
+        return
+
     reward = 50000
     data["cash"] += reward
-    await ctx.send(f"🎉 {ctx.author.mention} nhận **{reward:,} VNĐ**!")
+    data["last_daily"] = now
+    await ctx.send(
+        f"🎉 {ctx.author.mention} nhận **{reward:,} VNĐ**! "
+        f"⏰ Lần nhận tiếp theo sau 24 giờ."
+    )
 
 # Cá theo độ hiếm. Tỉ lệ tổng: Common 60%, Uncommon 25%, Rare 10%, Epic 4%,
 # Huyền thoại 0.9%, Mythic 0.1%.

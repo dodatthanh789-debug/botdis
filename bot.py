@@ -29,14 +29,14 @@ user_data = load_user_data()
 
 def get_user(user_id):
     if user_id not in user_data:
-        user_data[user_id] = {"cash": 10000, "slots": 30, "fish": [], "last_daily": 0, "rod": None, "rod_key": None, "durability": 0, "luck": 1.0, "owned_rods": [], "pets": []}
+        user_data[user_id] = {"cash": 10000, "slots": 50, "fish": [], "last_daily": 0, "rod": None, "rod_key": None, "durability": 0, "luck": 1.0, "owned_rods": [], "pets": []}
     # Tương thích với dữ liệu người chơi cũ
     user_data[user_id].setdefault("rod_key", None)
     user_data[user_id].setdefault("durability", 0)
     user_data[user_id].setdefault("pets", [])
     user_data[user_id].setdefault("owned_rods", [])
     user_data[user_id].setdefault("cash", 10000)
-    user_data[user_id].setdefault("slots", 30)
+    user_data[user_id].setdefault("slots", 50)
     user_data[user_id].setdefault("fish", [])
     user_data[user_id].setdefault("last_daily", 0)
     return user_data[user_id]
@@ -107,28 +107,47 @@ async def usecash(ctx):
     await ctx.send(f"💵 **{ctx.author.name}**, số dư: **{data['cash']:,} VNĐ**")
 
 @bot.command(name="usadaily")
+@commands.cooldown(1, 24 * 60 * 60, commands.BucketType.user)
 async def usadaily(ctx):
+    """Nhận daily, mỗi tài khoản chỉ nhận được 1 lần trong 24 giờ."""
     data = get_user(ctx.author.id)
-    now = __import__("time").time()
+
+    # Lưu thời điểm nhận bằng Unix timestamp để vẫn hoạt động sau khi bot restart.
+    import time
+    now = time.time()
     last = data.get("last_daily", 0) or 0
     try:
         last = float(last)
     except (ValueError, TypeError):
-        last = 0
+        last = 0.0
+
+    # Nếu dữ liệu cũ có timestamp ở tương lai (do chỉnh giờ/múi giờ),
+    # coi như chưa nhận để tránh khóa tài khoản vô thời hạn.
+    if last > now + 60:
+        last = 0.0
 
     cooldown = 24 * 60 * 60
     remaining = cooldown - (now - last)
+
     if remaining > 0:
-        hours = int(remaining // 3600)
-        minutes = int((remaining % 3600) // 60)
-        await ctx.send(f"⏳ {ctx.author.mention}, bạn đã nhận daily rồi! Còn **{hours} giờ {minutes} phút** nữa.")
+        total_seconds = int(remaining)
+        hours, rem = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(rem, 60)
+        await ctx.send(
+            f"⏳ {ctx.author.mention}, bạn đã nhận daily rồi! "
+            f"Còn **{hours} giờ {minutes} phút {seconds} giây** nữa."
+        )
         return
 
     reward = 50000
     data["cash"] += reward
     data["last_daily"] = now
     save_user_data()
-    await ctx.send(f"🎉 {ctx.author.mention} nhận **{reward:,} VNĐ**! ⏰ Daily tiếp theo sau 24 giờ.")
+
+    await ctx.send(
+        f"🎉 {ctx.author.mention} nhận **{reward:,} VNĐ**!\n"
+        f"⏰ Daily tiếp theo sau **24 giờ**."
+    )
 
 # Cá theo độ hiếm. Tỉ lệ tổng: Common 60%, Uncommon 25%, Rare 10%, Epic 4%,
 # Huyền thoại 0.9%, Mythic 0.1%.
@@ -417,12 +436,12 @@ class SellFishPageView(discord.ui.View):
         total_pages = max(1, (len(fish_options) - 1) // self.page_size + 1)
         if total_pages > 1:
             prev = discord.ui.Button(
-                label="◀ Trang trước",
+                label="trang trước",
                 style=discord.ButtonStyle.secondary,
                 disabled=(page == 0)
             )
             nxt = discord.ui.Button(
-                label="Trang sau ▶",
+                label="trang sau",
                 style=discord.ButtonStyle.secondary,
                 disabled=(page >= total_pages - 1)
             )
@@ -554,7 +573,7 @@ class SellFishView(discord.ui.View):
         super().__init__(timeout=180)
         self.owner_id = owner_id
 
-    @discord.ui.button(label="💰 Bán cá", style=discord.ButtonStyle.green, row=0)
+    @discord.ui.button(label="bán cá", style=discord.ButtonStyle.green, row=0)
     async def sell_button(self, interaction, button):
         if interaction.user.id != self.owner_id:
             return await interaction.response.send_message(
@@ -586,7 +605,7 @@ class SellFishView(discord.ui.View):
 
 
 def build_inventory_embed(ctx, data):
-    # ===== CÁ: gộp theo tên để hiển thị số lượng =====
+    # Gộp cá theo tên để hiển thị số lượng.
     counts = {}
     for fish in data.get("fish", []):
         counts[fish] = counts.get(fish, 0) + 1
@@ -596,50 +615,69 @@ def build_inventory_embed(ctx, data):
         for fish, count in counts.items():
             rarity = FISH_TO_RARITY.get(fish, "Common")
             emoji = RARITY_EMOJI.get(rarity, "🐟")
-            price = FISH_SELL_PRICES.get(rarity, 0)
-            fish_lines.append(f"{emoji} **{fish}** × `{count}`  •  {price:,}đ/con")
+            fish_lines.append(f"{emoji} **{fish}** × `{count}`")
         fish_text = "\n".join(fish_lines)
     else:
-        fish_text = "*Balo cá đang trống.*"
+        fish_text = f"Kho đồ của {ctx.author.mention} đang trống."
 
-    # Discord embed field tối đa 1024 ký tự. Nếu nhiều cá thì cắt phần hiển thị,
-    # dữ liệu trong balo vẫn giữ nguyên.
-    if len(fish_text) > 1000:
-        fish_text = fish_text[:990] + "\n… *Còn thêm cá trong balo*"
-
-    # ===== CẦN =====
+    # Cần đang dùng.
     if data.get("rod"):
         durability = data.get("durability")
-        durability_text = "♾️ Không thể gãy" if durability is None else f"{durability}"
-        rod_text = (
-            f"🎣 **{data['rod']}**\n"
-            f"🔧 Độ bền: **{durability_text}**\n"
-            f"🍀 May mắn: **x{data.get('luck', 1.0)}**"
-        )
+        durability_text = "♾️ Không thể gãy" if durability is None else str(durability)
+        rod_current = f"**{data['rod']}** — **{durability_text}** độ bền"
     else:
-        rod_text = "❌ **Chưa có cần câu**\n`!usabuy can_tre` để mua"
+        rod_current = "Chưa có cần câu"
 
-    # ===== PET =====
-    pets = data.get("pets", [])
-    pet_text = "\n".join(f"🐾 **{pet}**" for pet in pets) if pets else "*Chưa có pet.*"
-    if len(pet_text) > 1000:
-        pet_text = pet_text[:990] + "\n…"
+    # Kho cần câu: lấy danh sách cần đã sở hữu.
+    owned_rods = data.get("owned_rods", [])
+    rod_lines = []
+    for rod_key in owned_rods:
+        item = SHOP_ITEMS.get(rod_key)
+        if not item or item.get("type") != "rod":
+            continue
 
+        if rod_key == data.get("rod_key"):
+            durability = data.get("durability")
+        else:
+            durability = item.get("durability")
+
+        durability_text = "♾️ Không thể gãy" if durability is None else str(durability)
+        rod_lines.append(f"{item['name']} — **{durability_text}** độ bền")
+
+    # Hỗ trợ dữ liệu cũ: nếu đang dùng cần nhưng owned_rods chưa có.
+    if data.get("rod_key") and data["rod_key"] not in owned_rods:
+        item = SHOP_ITEMS.get(data["rod_key"])
+        if item:
+            durability = data.get("durability")
+            durability_text = "♾️ Không thể gãy" if durability is None else str(durability)
+            rod_lines.append(f"{item['name']} — **{durability_text}** độ bền")
+
+    rod_storage = "\n".join(rod_lines) if rod_lines else "Chưa có cần câu nào."
+
+    # Giao diện theo mẫu người dùng yêu cầu.
     embed = discord.Embed(
-        title=f"🎒 BALO CỦA {ctx.author.display_name}",
+        title="Kho đồ cá 🐟",
         description=(
-            f"**SỨC CHỨA**  `{len(data.get('fish', []))} / {data.get('slots', 30)} ô`\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "🐟 **CÁ ĐÃ CÂU**"
+            f"**({len(data.get('fish', []))}/{data.get('slots', 50)})**\n\n"
+            f"Kho đồ của {ctx.author.mention} đang trống."
+            if not data.get("fish")
+            else f"**({len(data.get('fish', []))}/{data.get('slots', 50)})**\n\n{fish_text}"
         ),
         color=discord.Color.blue()
     )
 
-    embed.add_field(name="🐟 CÁ", value=fish_text, inline=False)
-    embed.add_field(name="🎣 CẦN", value=rod_text, inline=False)
-    embed.add_field(name="🐾 PET", value=pet_text, inline=False)
-    embed.add_field(name="💰 TIỀN", value=f"**{data.get('cash', 0):,} VNĐ**", inline=False)
-    embed.set_footer(text="💰 Bấm Bán cá → chọn cá → Nhập số lượng bất kỳ")
+    embed.add_field(
+        name="Cần câu đang dùng",
+        value=rod_current,
+        inline=False
+    )
+    embed.add_field(
+        name="kho cần câu :",
+        value=rod_storage,
+        inline=False
+    )
+
+    embed.set_footer(text="Trang 1/1")
     return embed
 
 
